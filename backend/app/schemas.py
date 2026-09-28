@@ -52,6 +52,7 @@ class Recommendation(BaseModel):
     hypotheses: list[Hypothesis]
     recommended_steps: list[RecommendedStep]
     safety_notes: list[str]
+    evidence_memory_ids: list[str]
     memory_evidence: list[MemoryEvidence]
     unknowns: list[str]
 

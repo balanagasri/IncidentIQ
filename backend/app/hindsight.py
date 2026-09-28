@@ -1,14 +1,22 @@
 """Thin HTTP adapter to the real Hindsight Memory API."""
+import asyncio
 from typing import Any
 import httpx
 from .config import get_settings
 
 
 class HindsightError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, operation: str | None = None, attempts: int | None = None, cause: Exception | None = None):
+        super().__init__(message)
+        self.operation = operation
+        self.attempts = attempts
+        self.cause_type = type(cause).__name__ if cause else None
 
 
 class HindsightService:
+    MAX_TRANSPORT_RETRIES = 2
+    RETRY_DELAYS_SECONDS = (0.1, 0.2)
+
     def __init__(self):
         self.settings = get_settings()
 
@@ -31,20 +39,38 @@ class HindsightService:
             "tags": ["team:demo-sre", f"service:{incident.get('service', 'unknown')}", "type:incident"],
             "metadata": {"incident_id": str(incident["id"]), "service": str(incident.get("service", "unknown")), "source": "incidentiq", "synthetic": str(incident.get("is_synthetic", True)).lower()},
         }
-        async with httpx.AsyncClient(timeout=45) as client:
-            response = await client.post(f"{self.bank_url}/memories", headers=self._headers(), json={"items": [item]})
+        response = await self._post("/memories", {"items": [item]}, "retain")
         if response.is_error:
             raise HindsightError(f"Hindsight retain failed ({response.status_code}): {response.text[:400]}")
         return response.json()
 
     async def recall(self, query: str) -> list[dict[str, Any]]:
         body = self._recall_payload(query)
-        async with httpx.AsyncClient(timeout=45) as client:
-            response = await client.post(f"{self.bank_url}/memories/recall", headers=self._headers(), json=body)
+        response = await self._post("/memories/recall", body, "recall")
         if response.is_error:
             raise HindsightError(f"Hindsight recall failed ({response.status_code}): {response.text[:400]}")
         data = response.json()
         return data.get("results", [])
+
+    async def _post(self, path: str, payload: dict[str, Any], operation: str) -> httpx.Response:
+        """Retry only transient HTTP transport failures; HTTP responses are handled normally."""
+        headers = self._headers()
+        async with httpx.AsyncClient(timeout=45) as client:
+            for attempt in range(self.MAX_TRANSPORT_RETRIES + 1):
+                try:
+                    return await client.post(f"{self.bank_url}{path}", headers=headers, json=payload)
+                except httpx.TransportError as exc:
+                    if attempt >= self.MAX_TRANSPORT_RETRIES:
+                        total_attempts = attempt + 1
+                        raise HindsightError(
+                            f"Hindsight {operation} failed after {total_attempts} attempts due to "
+                            f"{type(exc).__name__}: {exc}",
+                            operation=operation,
+                            attempts=total_attempts,
+                            cause=exc,
+                        ) from exc
+                    await asyncio.sleep(self.RETRY_DELAYS_SECONDS[attempt])
+        raise AssertionError("unreachable")
 
     @staticmethod
     def _recall_payload(query: str) -> dict[str, Any]:

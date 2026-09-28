@@ -9,4 +9,14 @@ describe('IncidentIQ UI source', () => {
     expect(source).toContain('Record outcome + retain memory');
     expect(source).toContain('UNKNOWN');
   });
+
+  it('distinguishes recalled, selected, and recommendation-cited memories', () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+    expect(source).toContain('evidence_memory_ids');
+    expect(source).toContain('selected for reasoning');
+    expect(source).toContain('Based on recalled Hindsight memory:');
+    expect(source).toContain('citation?.reason');
+    expect(source).toContain('No recalled memory was cited by the recommendation.');
+    expect(source).toContain('compactEvidence(text)');
+  });
 });

@@ -4,7 +4,7 @@ from datetime import date, datetime
 from typing import Any
 from openai import AsyncOpenAI
 from .config import get_settings
-from .schemas import Recommendation
+from .schemas import MemoryEvidence, Recommendation
 
 
 SYSTEM_PROMPT = """You are IncidentIQ, an incident response assistant. Recommend safe investigation steps, never execute remediation.
@@ -12,6 +12,7 @@ Separate supplied FACTS from HYPOTHESES. Historical evidence may only come from 
 Do not invent incident IDs, outcomes, confirmed causes, or memory evidence. When evidence is absent, say so and list unknowns.
 Only cite incident IDs present in the supplied evidence, and only describe outcomes stated there. Prefer read-only diagnostics before changes.
 Treat `suspected_causes_unconfirmed` as hypotheses, and `confirmed_root_cause`/`resolution` as facts only when explicitly present. Do not promote hypotheses to facts.
+For `evidence_memory_ids`, cite exact incident IDs from `citation_allowlist` that directly support one or more actual recommended investigation steps. Explicitly connect each cited memory's intervention/outcome evidence to the step it supports. When a selected memory contains relevant evidence, you MUST cite at least one such memory; you may cite multiple. Similarity alone is not support: do not cite a memory unless its facts or intervention outcome meaningfully support a step. Never invent or alter an ID. Use an empty list only when no selected memory genuinely supports any recommended step.
 Return only an object matching the supplied Recommendation output schema, with every required field."""
 
 MAX_REASONING_MEMORIES = 6
@@ -23,8 +24,31 @@ async def recommend(incident: dict, evidence: list[dict]) -> tuple[Recommendatio
     if not settings.llm_api_key:
         raise RuntimeError("LLM_API_KEY is required to analyze incidents")
     selected = select_evidence(evidence)
+    allowed_evidence_memory_ids = list(dict.fromkeys(
+        _incident_id(memory) for memory in selected if _incident_id(memory)
+    ))
+    citation_allowlist = [
+        {
+            "incident_id": memory["incident_id"],
+            "memory_id": (memory.get("provenance") or {}).get("memory_id"),
+            "evidence_summary": memory["evidence_summary"],
+            "relevant_interventions_outcomes": _intervention_outcomes(memory["evidence_summary"]),
+        }
+        for memory in selected if memory.get("incident_id")
+    ]
     client = AsyncOpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url)
-    payload = {"current_incident": incident, "hindsight_memories": selected}
+    payload = {
+        "current_incident": incident,
+        "hindsight_memories": selected,
+        "allowed_evidence_memory_ids": allowed_evidence_memory_ids,
+        "citation_allowlist": citation_allowlist,
+        "citation_instruction": (
+            "Compare each recommended investigation step with the citation allowlist. "
+            "For example, if a step investigates connection-pool statistics and a selected memory "
+            "records pool saturation resolved by increasing pool capacity, cite that incident ID. "
+            "Cite only when the historical evidence supports the step, not merely because symptoms are similar."
+        ),
+    }
     user_content = json.dumps(payload, default=str)
     completion = await client.chat.completions.create(
         model=settings.llm_model,
@@ -43,14 +67,27 @@ async def recommend(incident: dict, evidence: list[dict]) -> tuple[Recommendatio
     result = Recommendation.model_validate_json(raw)
     by_id = {_incident_id(m): m for m in selected if _incident_id(m)}
     allowed_ids = set(by_id)
-    cited = []
-    for citation in result.memory_evidence:
-        memory = by_id.get(citation.incident_id)
-        if memory and citation.incident_id not in {x.incident_id for x in cited}:
-            cited.append(type(citation)(incident_id=citation.incident_id,
-                reason="Retrieved by Hindsight and cited by the recommendation.",
-                outcome_summary=str(memory.get("evidence_summary") or memory.get("text") or memory.get("content") or "Hindsight returned this incident memory.")))
-    result.memory_evidence = cited
+    model_returned_citations = bool(result.evidence_memory_ids)
+    result.evidence_memory_ids = list(dict.fromkeys(
+        memory_id for memory_id in result.evidence_memory_ids if memory_id in allowed_ids
+    ))
+    citation_source = "model"
+    if not model_returned_citations:
+        result.evidence_memory_ids = _fallback_evidence_ids(result, selected)
+        if result.evidence_memory_ids:
+            citation_source = "deterministic relevance check"
+    result.memory_evidence = [
+        MemoryEvidence(
+            incident_id=memory_id,
+            reason=("Selected Hindsight memory matched to a recommended investigation step by a "
+                    f"{citation_source}."),
+            outcome_summary=str(by_id[memory_id].get("evidence_summary")
+                                or by_id[memory_id].get("text")
+                                or by_id[memory_id].get("content")
+                                or "Hindsight returned this incident memory."),
+        )
+        for memory_id in result.evidence_memory_ids
+    ]
     for step in result.recommended_steps:
         step.evidence_ids = [i for i in step.evidence_ids if i in allowed_ids]
     return result, {
@@ -58,6 +95,61 @@ async def recommend(incident: dict, evidence: list[dict]) -> tuple[Recommendatio
         "selected_for_reasoning": len(selected),
         "llm_payload_characters": len(user_content),
     }
+
+
+_STOPWORDS = {
+    "about", "after", "again", "also", "an", "and", "are", "as", "at", "be", "before", "by",
+    "cause", "confirmed", "current", "during", "for", "from", "had", "has", "have", "in", "into",
+    "is", "it", "its", "may", "memory", "of", "on", "or", "our", "record", "reported", "resolve",
+    "resolved", "resolution", "root", "service", "should", "similar", "step", "symptom", "system", "the",
+    "their", "this", "through", "to", "using", "was", "were", "what", "when", "which", "with", "would",
+    "incident", "intervention", "interventions", "outcome", "outcomes", "successful", "failed", "unknown",
+    "check", "checking", "inspect", "inspecting", "investigate", "investigating", "examine", "examining",
+    "statistics", "statistic", "metric", "metrics", "data", "evidence", "history", "historical", "recommendation",
+}
+
+
+def _tokens(value: str) -> set[str]:
+    tokens = set()
+    for token in re.findall(r"[a-z0-9]+", value.lower()):
+        if len(token) < 3 or token in _STOPWORDS:
+            continue
+        if token.endswith("ies") and len(token) > 5:
+            token = token[:-3] + "y"
+        elif token.endswith("s") and not token.endswith("ss") and len(token) > 4:
+            token = token[:-1]
+        tokens.add(token)
+    return tokens
+
+
+def _intervention_outcomes(summary: str) -> str:
+    match = re.search(r"Interventions and outcomes:\s*(.*?)(?=\s+(?:Confirmed root cause|Resolution):|$)", summary, re.I)
+    return match.group(1).strip() if match else ""
+
+
+def _fallback_evidence_ids(recommendation: Recommendation, selected: list[dict[str, Any]]) -> list[str]:
+    """Cite only selected memories with meaningful overlap to an actual recommended step."""
+    recommendation_text = " ".join(
+        [recommendation.summary]
+        + [f"{step.step} {step.expected_observation}" for step in recommendation.recommended_steps]
+    )
+    recommendation_tokens = _tokens(recommendation_text)
+    ranked: list[tuple[int, int, str]] = []
+    for memory in selected:
+        incident_id = str(memory.get("incident_id") or "")
+        summary = str(memory.get("evidence_summary") or "")
+        if not incident_id or not summary:
+            continue
+        overlap = recommendation_tokens & _tokens(summary)
+        # Two shared substantive terms provide clear textual grounding. A single highly
+        # specific term is sufficient only alongside an explicitly recorded intervention outcome.
+        has_outcome = bool(re.search(r"\b(successful|failed|inconclusive)\b", summary, re.I))
+        specific_anchor = overlap & {"connection", "pool", "deadlock", "certificate", "gateway", "queue", "dns", "tls", "throttle", "replica", "lock", "token", "credential", "timeout"}
+        if len(overlap) < 2 and not (specific_anchor and has_outcome):
+            continue
+        ranked.append((len(overlap), int(has_outcome), incident_id))
+    ranked.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    return list(dict.fromkeys(item[2] for item in ranked[:2]))
 
 
 def select_evidence(memories: list[dict[str, Any]], limit: int = MAX_REASONING_MEMORIES) -> list[dict[str, Any]]:
