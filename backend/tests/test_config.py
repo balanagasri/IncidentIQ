@@ -21,3 +21,15 @@ def test_llm_configuration_can_be_overridden_from_environment(monkeypatch):
     assert settings.llm_base_url == "https://api.groq.com/openai/v1"
     assert settings.llm_model == "openai/gpt-oss-120b"
     assert settings.llm_api_key == "test-key-not-a-real-credential"
+
+
+def test_cors_origins_accept_vercel_production_origin():
+    settings = Settings(
+        _env_file=None,
+        app_cors_origins="http://localhost:5173,https://incident-iq-tau.vercel.app",
+    )
+
+    assert settings.cors_origins == [
+        "http://localhost:5173",
+        "https://incident-iq-tau.vercel.app",
+    ]

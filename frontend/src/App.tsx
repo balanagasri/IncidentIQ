@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { api } from './api';
 import './intake.css';
 
 type Screen = 'incidents' | 'analytics' | 'postmortem' | 'status';
@@ -13,12 +14,6 @@ type PostmortemDraft = { id: number; incident_id: string; report: Record<string,
 type AnalyticsData = { measured_from: string; incident_count: number; investigation_count: number; investigations_with_recalled_results: number; recommendations_with_citations: number; citation_validity: number | null; valid_citations: number; citation_count: number; successful_hindsight_retains: number; distinct_incidents_with_retained_outcomes: number; action_outcomes: Record<string, number>; recommendation_feedback: { accepted: number; rejected: number; recorded: number }; latest_evaluation?: { id: number; status: string; created_at: string; result: EvaluationResult } | null };
 type EvaluationResult = { evaluation_mode: string; baseline: { mode: string; retrieved_relevant: number; expected_relevant_in_completed_cases: number; note: string }; memory_assisted: { completed_cases: number; failed_cases: number; retrieval_recall: number | null; retrieval_recall_hits: number; retrieval_recall_expected: number; selected_precision: number | null; selected_precision_relevant: number; selected_precision_count: number; unmatched_cases_with_results: number; unmatched_cases: number }; metric_definitions: Record<string, string>; cases: { case_id: string; status: string; error_type?: string; recalled_ids: string[]; selected_ids: string[]; relevant_recalled_ids?: string[] }[] };
 
-const api = async <T,>(path: string, init?: RequestInit): Promise<T> => {
-  const response = await fetch(path, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) } });
-  const body = await response.json();
-  if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail || 'Request failed'));
-  return body as T;
-};
 const compactEvidence = (text: string) => { const value = text.replace(/\s+/g, ' ').trim(); return value.length > 320 ? `${value.slice(0, 319)}…` : value; };
 const fmt = (value: number | null | undefined, digits = 0) => value == null ? 'Not measured' : `${(value * (digits ? 100 : 1)).toFixed(digits || 0)}${digits ? '%' : ''}`;
 

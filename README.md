@@ -103,6 +103,65 @@ npm.cmd run dev
 Open `http://localhost:5173`. Vite proxies `/api` requests to the local FastAPI service.
 If the backend uses a non-default port, set `VITE_API_TARGET` before starting Vite (for example, `http://127.0.0.1:8001`); the default proxy target is `http://localhost:8000`.
 
+## Deploy to Render and Vercel
+
+The backend and frontend are deployed as separate services. The browser calls the FastAPI service directly in production; Hindsight and Groq credentials stay in Render and are never placed in Vercel environment variables. The frontend's optional `VITE_API_BASE_URL` is a public API origin, not a secret. When it is unset, API calls stay relative and local Vite development continues to use its `/api` proxy.
+
+### Render: FastAPI backend
+
+Create a **Web Service** from this repository with:
+
+| Setting | Value |
+| --- | --- |
+| Root Directory | `backend` |
+| Runtime | Python 3 |
+| Build Command | `pip install -r requirements.txt` |
+| Start Command | `python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
+
+Render supplies `PORT`; Uvicorn must bind to `0.0.0.0`. In the Render service's environment settings, configure every variable below. Keep Hindsight and Groq keys as secret environment values; do not put them in Vercel or commit them.
+
+| Variable | Production value |
+| --- | --- |
+| `HINDSIGHT_BASE_URL` | `https://api.hindsight.vectorize.io` (or the base URL for your Hindsight deployment) |
+| `HINDSIGHT_API_KEY` | Your Hindsight API key (secret) |
+| `HINDSIGHT_BANK_ID` | The Hindsight bank reserved for this deployment, for example `incidentiq-demo` |
+| `LLM_BASE_URL` | `https://api.groq.com/openai/v1` |
+| `LLM_API_KEY` | Your Groq API key (secret) |
+| `LLM_MODEL` | `openai/gpt-oss-120b` |
+| `LLM_PROVIDER` | `groq` |
+| `APP_DATABASE_URL` | `sqlite:////var/data/incidentiq.db` when using the persistent disk described below |
+| `APP_CORS_ORIGINS` | Comma-separated exact browser origins. For this deployment use `https://incident-iq-tau.vercel.app` (add any custom domain and `http://localhost:5173` if needed) |
+
+**Persist SQLite before using the public service.** Render's ordinary service filesystem is ephemeral, so the default `sqlite:///./incidentiq.db` can be lost on redeploy or restart. Attach a Render persistent disk to the backend service, mount it at `/var/data`, and set `APP_DATABASE_URL` to `sqlite:////var/data/incidentiq.db`. This MVP uses a single SQLite file and is intended for one backend instance with that disk. The production database starts separately; no local database is copied or migrated by these instructions. Keep the existing local database unchanged. If you need its records in production, plan and approve a separate migration first.
+
+After deployment, verify `https://<your-render-service>.onrender.com/api/health` responds. This endpoint reports configuration presence, not live Hindsight or Groq connectivity. Test an actual incident analysis and retain workflow before treating the service as operational.
+
+### Vercel: React/Vite frontend
+
+Import the repository into Vercel and configure:
+
+| Setting | Value |
+| --- | --- |
+| Root Directory | `frontend` |
+| Framework Preset | Vite |
+| Build Command | `npm run build` |
+| Output Directory | `dist` |
+
+Set this Vercel environment variable for the Production environment (and Preview if desired):
+
+| Variable | Value |
+| --- | --- |
+| `VITE_API_BASE_URL` | `https://incidentiq-vzw6.onrender.com` (no trailing slash) |
+
+Then redeploy the frontend so Vite includes the configured public API origin in the build. Set Render's `APP_CORS_ORIGINS` to `https://incident-iq-tau.vercel.app` (plus any intended custom domain origins, comma-separated, with no path component). Vite's local `/api` proxy remains available for development.
+
+### Deployment verification
+
+1. Confirm `/api/health` loads from the Render service URL.
+2. Open the Vercel site and verify its browser requests target the Render URL and do not fail CORS.
+3. Analyze a synthetic incident, inspect actual Hindsight evidence, record an outcome, then analyze a related incident to check whether the retained outcome is recalled.
+4. Verify the backend's persistent disk is mounted and that application records remain after a service restart. This setup does not migrate existing local records.
+
 ## Demo walkthrough
 
 1. Start both services and confirm `/api/health` reports Hindsight and LLM configuration.
