@@ -36,10 +36,53 @@ class Action(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
 
 
+class ActionSubmission(SQLModel, table=True):
+    submission_id: str = Field(primary_key=True)
+    action_id: int = Field(foreign_key="action.id", unique=True)
+    created_at: datetime = Field(default_factory=utcnow)
+
+
 class Analysis(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     incident_id: str = Field(index=True, foreign_key="incident.id")
     recommendation: dict = Field(default_factory=dict, sa_column=Column(JSON))
     evidence: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class MemoryRetention(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    incident_id: str = Field(index=True)
+    document_id: str
+    reason: str
+    action_count: int = 0
+    has_resolution: bool = False
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class RecommendationFeedback(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    analysis_id: int = Field(foreign_key="analysis.id", unique=True, index=True)
+    accepted: bool
+    note: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class EvaluationRun(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    status: str
+    result: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class Postmortem(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    incident_id: str = Field(foreign_key="incident.id", unique=True, index=True)
+    report: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    markdown: str = ""
+    finalized: bool = False
+    retained_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
 

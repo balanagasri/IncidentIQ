@@ -14,8 +14,9 @@ def test_narrative_preserves_failed_and_successful_actions():
             {"action": "Raise pool", "outcome": "successful", "notes": "Latency recovered."},
         ]
     })
-    assert "Restart: failed" in text
-    assert "Raise pool: successful" in text
+    assert "intervention 'Restart' was failed" in text
+    assert "intervention 'Raise pool' was successful" in text
+    assert "Engineer notes: It returned." in text
     assert "confirmed" in text.lower()
 
 

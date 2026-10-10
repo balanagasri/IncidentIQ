@@ -82,7 +82,11 @@ class HindsightService:
     @staticmethod
     def _narrative(i: dict[str, Any]) -> str:
         actions = i.get("actions", [])
-        action_lines = [f"- {a.get('action')}: {a.get('outcome')} — {a.get('notes', '')}" for a in actions]
+        action_lines = [
+            f"- The engineer reported that the intervention '{a.get('action')}' was {a.get('outcome')}. "
+            f"Engineer notes: {a.get('notes') or 'No notes recorded.'}"
+            for a in actions
+        ]
         if not action_lines:
             action_lines = ["- No interventions recorded yet; do not infer outcomes."]
         return "\n".join([
